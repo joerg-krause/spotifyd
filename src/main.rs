@@ -40,7 +40,7 @@ mod cli;
 
 struct MainLoopState {
     connection: Box<Future<Item = Session, Error = io::Error>>,
-    mixer: fn() -> Box<mixer::Mixer>,
+    mixer: fn(Option<String>) -> Box<mixer::Mixer>,
     backend: fn(Option<String>) -> Box<Sink>,
     audio_device: Option<String>,
     spirc_task: Option<SpircTask>,
@@ -55,7 +55,7 @@ struct MainLoopState {
 
 impl MainLoopState {
     fn new(connection: Box<Future<Item = Session, Error = io::Error>>,
-           mixer: fn() -> Box<mixer::Mixer>,
+           mixer: fn(Option<String>) -> Box<mixer::Mixer>,
            backend: fn(Option<String>) -> Box<Sink>,
            audio_device: Option<String>,
            ctrl_c_stream: IoStream<()>,
@@ -99,15 +99,16 @@ impl Future for MainLoopState {
             }
 
             if let Async::Ready(session) = self.connection.poll().unwrap() {
-                let audio_filter = (self.mixer)().get_audio_filter();
+                let audio_device = self.audio_device.clone();
+                let audio_filter = (self.mixer)(audio_device).get_audio_filter();
                 self.connection = Box::new(futures::future::empty());
                 let backend = self.backend;
                 let audio_device = self.audio_device.clone();
                 let player = Player::new(session.clone(),
                                          audio_filter,
                                          move || (backend)(audio_device));
-
-                let (spirc, spirc_task) = Spirc::new(session, player, (self.mixer)());
+                let audio_device = self.audio_device.clone();
+                let (spirc, spirc_task) = Spirc::new(session, player, (self.mixer)(audio_device));
                 self.spirc_task = Some(spirc_task);
                 self.spirc = Some(spirc);
             } else if let Async::Ready(_) = self.ctrl_c_stream.poll().unwrap() {
