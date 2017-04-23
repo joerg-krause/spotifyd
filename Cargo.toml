@@ -3,6 +3,13 @@ name = "spotifyd"
 version = "0.1.0"
 authors = ["Simon Persson <simon@flaskpost.org>"]
 
+[profile.release]
+opt-level = "s"
+debug = false
+rpath = false
+lto = true
+debug-assertions = false
+
 [dependencies]
 simplelog = "^0.4.2"
 xdg = "^2.0"
