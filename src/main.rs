@@ -9,9 +9,11 @@ extern crate syslog;
 #[macro_use]
 extern crate log;
 extern crate futures;
+#[macro_use]
 extern crate tokio_core;
 extern crate tokio_io;
 extern crate tokio_signal;
+extern crate tokio_uds;
 
 use std::process::exit;
 use std::panic;
@@ -19,6 +21,8 @@ use std::convert::From;
 use std::error::Error;
 use std::path::PathBuf;
 use std::io;
+use std::fs;
+use std::str;
 
 use librespot::spirc::{Spirc, SpircTask};
 use librespot::session::{Session, Config as SessionConfig};
@@ -34,6 +38,7 @@ use futures::{Future, Async, Poll, Stream};
 use tokio_core::reactor::{Handle, Core};
 use tokio_io::IoStream;
 use tokio_signal::ctrl_c;
+use tokio_uds::UnixDatagram;
 
 mod config;
 mod cli;
@@ -51,6 +56,7 @@ struct MainLoopState {
     config: SessionConfig,
     handle: Handle,
     discovery_stream: DiscoveryStream,
+    socket: UnixDatagram,
 }
 
 impl MainLoopState {
@@ -60,6 +66,7 @@ impl MainLoopState {
            audio_device: Option<String>,
            ctrl_c_stream: IoStream<()>,
            discovery_stream: DiscoveryStream,
+           socket: UnixDatagram,
            cache: Option<Cache>,
            config: SessionConfig,
            handle: Handle)
@@ -77,6 +84,7 @@ impl MainLoopState {
             config: config,
             handle: handle,
             discovery_stream: discovery_stream,
+            socket: socket,
         }
     }
 }
@@ -84,9 +92,9 @@ impl MainLoopState {
 
 impl Future for MainLoopState {
     type Item = ();
-    type Error = ();
+    type Error = io::Error;
 
-    fn poll(&mut self) -> Poll<(), ()> {
+    fn poll(&mut self) -> Poll<(), io::Error> {
         loop {
             if let Async::Ready(Some(creds)) = self.discovery_stream.poll().unwrap() {
                 if let Some(ref mut spirc) = self.spirc {
@@ -120,6 +128,23 @@ impl Future for MainLoopState {
                         return Ok(Async::Ready(()));
                     }
                 }
+            } else if let Async::Ready(()) = self.socket.poll_read() {
+                let mut buf: Vec<u8> = vec![0; 16];
+                let count: usize = try_nb!(self.socket.recv_from(&mut buf)).0;
+                let command = str::from_utf8(buf[..count].as_mut()).unwrap();
+
+                if let Some(ref spirc) = self.spirc {
+                    match command {
+                        "play" => spirc.play(),
+                        "playpause" => spirc.play_pause(),
+                        "pause"|"stop" => spirc.pause(),
+                        "next" => spirc.next(),
+                        "prev" => spirc.prev(),
+                        "volumeup" => spirc.volume_up(),
+                        "volumedown" => spirc.volume_down(),
+                        _ => (),
+                    }
+                }
             } else if let Some(Async::Ready(_)) =
                 self.spirc_task
                     .as_mut()
@@ -133,6 +158,7 @@ impl Future for MainLoopState {
 }
 
 fn main() {
+    static PATH: &'static str = "/var/run/librespot.sock";
     let opts = cli::command_line_argument_options();
     let args: Vec<String> = std::env::args().collect();
 
@@ -207,6 +233,11 @@ fn main() {
     let mut core = Core::new().unwrap();
     let handle = core.handle();
 
+    let socket = UnixDatagram::bind(PATH, &handle).unwrap_or_else(|_| {
+        fs::remove_file(PATH).unwrap();
+        UnixDatagram::bind(PATH, &handle).unwrap()
+    });
+
     let cache = config.cache;
     let session_config = config.session_config;
     let backend = config.backend.clone();
@@ -234,6 +265,7 @@ fn main() {
                                            audio_device,
                                            ctrl_c(&handle).flatten_stream().boxed(),
                                            discovery_stream,
+                                           socket,
                                            cache,
                                            session_config,
                                            handle);
